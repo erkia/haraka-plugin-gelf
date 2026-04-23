@@ -41,12 +41,13 @@ function resolveConfig(plugin, name, main, ovr = {})
 {
     const out = { ...main };
 
-    if ('enabled' in ovr)        out.enabled = toBool(ovr.enabled, true);
-    if ('url' in ovr)            out.url = ovr.url;
-    if ('compress' in ovr)       out.compress = toBool(ovr.compress, true);
-    if ('last' in ovr)           out.last = toBool(ovr.last, false);
-    if ('max_chunk_size' in ovr) out.max_chunk_size = Number(ovr.max_chunk_size);
-    if ('hostname' in ovr)       out.hostname = ovr.hostname;
+    if ('enabled' in ovr)           out.enabled = toBool(ovr.enabled, true);
+    if ('log_hook_enabled' in ovr)  out.log_hook_enabled = toBool(ovr.log_hook_enabled, true);
+    if ('url' in ovr)               out.url = ovr.url;
+    if ('compress' in ovr)          out.compress = toBool(ovr.compress, true);
+    if ('last' in ovr)              out.last = toBool(ovr.last, false);
+    if ('max_chunk_size' in ovr)    out.max_chunk_size = Number(ovr.max_chunk_size);
+    if ('hostname' in ovr)          out.hostname = ovr.hostname;
 
     // Have some sane minimum limit and theoretical maximum limit for max_chunk_size.
     // Actual meaningful values depend on network MTU and Graylog components.
@@ -190,6 +191,16 @@ async function sendGelf(socket, cfg, message)
     }
 }
 
+function getConfig(plugin, callerPlugin)
+{
+    const pluginName = (callerPlugin?.name ?? '-');
+    if (pluginName && plugin.cfg.plugins[pluginName]) {
+        return plugin.cfg.plugins[pluginName];
+    } else {
+        return plugin.cfg.main;
+    }
+}
+
 exports.register = function ()
 {
     const plugin = this;
@@ -210,6 +221,7 @@ exports.load_gelf_config = function ()
         {
             booleans: [
                 '+main.enabled',
+                '+main.log_hook_enabled',
                 '+main.compress',
                 '-main.last',
             ],
@@ -222,6 +234,7 @@ exports.load_gelf_config = function ()
     // Pass through resolveConfig() for validation
     cfg.main = resolveConfig(plugin, 'main', {
         enabled: toBool(cfg.main?.enabled, true),
+        log_hook_enabled: toBool(cfg.main?.log_hook_enabled, true),
         url: cfg.main?.url || 'udp://localhost:12201',
         compress: toBool(cfg.main?.compress, true),
         last: toBool(cfg.main?.last, false),
@@ -257,16 +270,6 @@ exports.init_gelf_sender = function (next, server)
     }
 
     const sockets = new Map();
-
-    const getConfig = (callerPlugin) =>
-    {
-        const pluginName = (callerPlugin?.name ?? '-');
-        if (pluginName && plugin.cfg.plugins[pluginName]) {
-            return plugin.cfg.plugins[pluginName];
-        } else {
-            return plugin.cfg.main;
-        }
-    };
 
     const lookup = (hostname, family, cb) =>
     {
@@ -344,7 +347,7 @@ exports.init_gelf_sender = function (next, server)
 
         getSender(callerPlugin)
         {
-            const pluginCfg = getConfig(callerPlugin);
+            const pluginCfg = getConfig(plugin, callerPlugin);
 
             if (!pluginCfg.enabled) {
                 return {
@@ -377,7 +380,7 @@ exports.init_gelf_sender = function (next, server)
 
         message(callerPlugin, msg)
         {
-            const pluginCfg = getConfig(callerPlugin);
+            const pluginCfg = getConfig(plugin, callerPlugin);
 
             if (pluginCfg.enabled) {
                 (async () => {
@@ -503,7 +506,15 @@ exports.hook_log = function (next, logger, log)
         msg.short_message = log.data;
     }
 
-    const is_last = plugin.loggelf.message({ name: msg._logger }, msg);
+    // Make fake callerPlugin to pass to our functions, which currently only use the name of the plugin.
+    const callerPlugin = { name: msg._logger };
+
+    const pluginCfg = getConfig(plugin, callerPlugin);
+    if (!pluginCfg.log_hook_enabled) {
+        return next();
+    }
+
+    const is_last = plugin.loggelf.message(callerPlugin, msg);
 
     if (is_last) {
         // Skip all following logger plugins
