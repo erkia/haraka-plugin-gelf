@@ -10,6 +10,10 @@ const crypto = require('node:crypto');
 const GELF_VERSION = '1.1';
 const CHUNK_MAGIC_0 = 0x1e;
 const CHUNK_MAGIC_1 = 0x0f;
+const GELF_RESERVED = new Set([
+    'id', 'version', 'host', 'short_message', 'full_message',
+    'timestamp', 'level', 'facility', 'line', 'file',
+]);
 
 const LogLevel = Object.freeze({
     EMERG:  0,
@@ -51,8 +55,18 @@ function resolveConfig(plugin, name, main, ovr = {})
 
     // Have some sane minimum limit and theoretical maximum limit for max_chunk_size.
     // Actual meaningful values depend on network MTU and Graylog components.
-    if (out.max_chunk_size < 64 || out.max_chunk_size > 65475) {
-        plugin.logerror(`${name}: invalid max_chunk_size=${out.max_chunk_size}`);
+    if (!Number.isInteger(out.max_chunk_size) || out.max_chunk_size < 64 || out.max_chunk_size > 65475) {
+        plugin.logerror(`${name}: invalid max_chunk_size: ${out.max_chunk_size}`);
+        out.enabled = false;
+    }
+
+    try {
+        const { protocol } = new URL(out.url);
+        if (protocol !== "udp" && protocol !== "udp4" && protocol !== "udp6") {
+            throw new Error('protocol not supported');
+        }
+    } catch (err) {
+        plugin.logerror(`${name}: invalid url: ${out.url} (${err.message})`);
         out.enabled = false;
     }
 
@@ -63,6 +77,8 @@ function stringify(value)
 {
     if (typeof value === 'string') {
         return value;
+    } else if (value === undefined || value === null) {
+        return '';
     } else {
         return String(value);
     }
@@ -98,13 +114,29 @@ function sanitizeValue(value)
     return jsonify(value);
 }
 
+function normalizeInteger(value, defaultValue)
+{
+    value = Number(value);
+    if (!Number.isInteger(value)) {
+        value = defaultValue;
+    }
+    return value;
+}
+
 function normalizeTimestamp(value)
 {
     if (value instanceof Date) {
         return value.getTime() / 1000;
-    } else {
-        return Date.now() / 1000;
+    } else if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+    } else if (typeof value === 'string' && value.trim() !== '') {
+        const n = Number(value);
+        if (Number.isFinite(n)) {
+            return n;
+        }
     }
+
+    return Date.now() / 1000;
 }
 
 function createMessage(cfg, msg)
@@ -115,16 +147,17 @@ function createMessage(cfg, msg)
         short_message: stringify(msg.short_message),
         full_message: (msg.full_message !== undefined ? stringify(msg.full_message) : undefined),
         timestamp: normalizeTimestamp(msg.timestamp),
-        level: Number(msg.level),
+        level: normalizeInteger(msg.level, LogLevel.INFO),
         facility: (msg.facility !== undefined ? stringify(msg.facility) : undefined),
         file: (msg.file !== undefined ? stringify(msg.file) : undefined),
-        line: (msg.line !== undefined ? Number(msg.line) : undefined),
+        line: normalizeInteger(msg.line, undefined),
     };
+
 
     // Convert all remaining custom fields to GELF additional fields (_foo).
     for (const [key, value] of Object.entries(msg)) {
         const additional_key = key.startsWith('_') ? key : `_${key}`;
-        if (out[additional_key.slice(1)] !== undefined || value === null || value === undefined) {
+        if (GELF_RESERVED.has(additional_key.slice(1)) || value === null || value === undefined) {
             continue;
         }
         out[additional_key] = sanitizeValue(value);
@@ -193,7 +226,7 @@ async function sendGelf(socket, cfg, message)
 
 function getConfig(plugin, callerPlugin)
 {
-    const pluginName = (callerPlugin?.name ?? '-');
+    const pluginName = callerPlugin?.name;
     if (pluginName && plugin.cfg.plugins[pluginName]) {
         return plugin.cfg.plugins[pluginName];
     } else {
@@ -305,6 +338,8 @@ exports.init_gelf_sender = function (next, server)
             throw new Error(`Invalid protocol: ${protocol}`);
         }
 
+        // Create udp6 dual-stack socket unless udp4 or udp6 is explicitly requested.
+        // On systems, where IPv6 stack is not enabled, udp4 must be used in configuration.
         const socket = dgram.createSocket({
             type:       (family === 4 ? 'udp4' : 'udp6'),
             ipv6Only:   (family === 6),
@@ -399,12 +434,14 @@ exports.init_gelf_sender = function (next, server)
 
         log(callerPlugin, connection, level, shortMessage, extra = {})
         {
+            const pluginName = callerPlugin?.name;
             const txid = connection?.transaction?.uuid;
+
             return this.message(callerPlugin, {
                 ...extra,
                 level,
-                short_message: `[${(txid ?? '-')}] [${callerPlugin?.name ?? '-'}] ${shortMessage}`,
-                _logger: callerPlugin?.name,
+                short_message: `[${(txid ?? '-')}] [${pluginName ?? '-'}] ${shortMessage}`,
+                _logger: pluginName,
                 _connection: connection?.uuid,
                 _transaction: txid,
             });
