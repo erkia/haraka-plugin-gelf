@@ -240,7 +240,7 @@ exports.load_gelf_config = function ()
 
     plugin.cfg = cfg;
 
-    plugin.loginfo("config ok");
+    plugin.loginfo("config loaded");
 };
 
 exports.init_gelf_sender = function (next, server)
@@ -258,8 +258,9 @@ exports.init_gelf_sender = function (next, server)
 
     const sockets = new Map();
 
-    const getConfig = (pluginName) =>
+    const getConfig = (callerPlugin) =>
     {
+        const pluginName = (callerPlugin?.name ?? '-');
         if (pluginName && plugin.cfg.plugins[pluginName]) {
             return plugin.cfg.plugins[pluginName];
         } else {
@@ -343,7 +344,15 @@ exports.init_gelf_sender = function (next, server)
 
         getSender(callerPlugin)
         {
-            const pluginCfg = getConfig(callerPlugin?.name);
+            const pluginCfg = getConfig(callerPlugin);
+
+            if (!pluginCfg.enabled) {
+                return {
+                    message(msg) {
+                        return pluginCfg.last;
+                    },
+                };
+            }
 
             try {
                 const socket = getSocket(pluginCfg.url);
@@ -368,29 +377,33 @@ exports.init_gelf_sender = function (next, server)
 
         message(callerPlugin, msg)
         {
-            const pluginCfg = getConfig(callerPlugin?.name);
+            const pluginCfg = getConfig(callerPlugin);
 
-            (async () => {
-                try {
-                    const socket = getSocket(pluginCfg.url);
-                    await sendGelf(socket, pluginCfg, msg);
-                } catch (err) {
-                    // Do not use Haraka logger to avoid log loop
-                    console.error(err.message);
-                }
-            })();
+            if (pluginCfg.enabled) {
+                (async () => {
+                    try {
+                        const socket = getSocket(pluginCfg.url);
+                        await sendGelf(socket, pluginCfg, msg);
+                    } catch (err) {
+                        // Do not use Haraka logger to avoid log loop
+                        console.error(err.message);
+                    }
+                })();
+            }
 
             return pluginCfg.last;
         },
 
         log(callerPlugin, connection, level, shortMessage, extra = {})
         {
+            const txid = connection?.transaction?.uuid;
             return this.message(callerPlugin, {
                 ...extra,
                 level,
-                short_message: shortMessage,
+                short_message: `[${(txid ?? '-')}] [${callerPlugin?.name ?? '-'}] ${shortMessage}`,
                 _logger: callerPlugin?.name,
-                _transaction: connection?.uuid,
+                _connection: connection?.uuid,
+                _transaction: txid,
             });
         },
 
@@ -460,16 +473,26 @@ exports.hook_log = function (next, logger, log)
 
     const msg = {
         level: LogLevel[log.level.toUpperCase()] ?? LogLevel.DEBUG,
-        short_message: null,
-        _transaction: null,
-        _logger: null,
+        short_message: undefined,
+        _connection: undefined,
+        _transaction: undefined,
+        _logger: undefined,
     };
 
-    // Get transaction UUID and caller plugin name from log message
+    // Get UUID and caller plugin name from log message
     const match = log.data.match(/^\[([^\]]+)\] \[([^\]]+)\] \[([^\]]+)\] (.+)$/);
     if (match) {
         if (match[2] !== '-') {
-            msg._transaction = match[2];
+            // UUID is
+            //       connection UUID (i.e. 481ED4FE-1B62-49CF-B581-F7B6641256BB)
+            //   or transaction UUID (i.e. 481ED4FE-1B62-49CF-B581-F7B6641256BB.1)
+            const uuidmatch = match[2].match(/^([^\.]+)(\.([0-9]+))?$/i);
+            if (uuidmatch) {
+                msg._connection = uuidmatch[1];
+                if (uuidmatch[3]) {
+                    msg._transaction = uuidmatch[0];
+                }
+            }
         }
         if (match[3] !== '-') {
             msg._logger = match[3];
@@ -480,7 +503,7 @@ exports.hook_log = function (next, logger, log)
         msg.short_message = log.data;
     }
 
-    const is_last = plugin.loggelf.message(logger, msg);
+    const is_last = plugin.loggelf.message({ name: msg._logger }, msg);
 
     if (is_last) {
         // Skip all following logger plugins
