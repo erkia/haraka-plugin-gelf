@@ -1,6 +1,6 @@
 {
   "name": "haraka-plugin-gelf",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Haraka plugin for Graylog/GELF logging",
   "main": "index.js",
   "directories": {
@@ -13,7 +13,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/erkia/haraka-plugin-gelf.git"
+    "url": "git+https://github.com/zone-eu/haraka-plugin-gelf.git"
   },
   "keywords": [
     "haraka",
@@ -25,9 +25,9 @@
   "author": "Erki Aring",
   "license": "EUPL-1.1+",
   "bugs": {
-    "url": "https://github.com/erkia/haraka-plugin-gelf/issues"
+    "url": "https://github.com/zone-eu/haraka-plugin-gelf/issues"
   },
-  "homepage": "https://github.com/erkia/haraka-plugin-gelf#readme",
+  "homepage": "https://github.com/zone-eu/haraka-plugin-gelf#readme",
   "devDependencies": {
     "@haraka/eslint-config": "^2.0.4",
     "haraka-test-fixtures": "^1.4.1"
