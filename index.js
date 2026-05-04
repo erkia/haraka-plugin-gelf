@@ -62,7 +62,7 @@ function resolveConfig(plugin, name, main, ovr = {})
 
     try {
         const { protocol } = new URL(out.url);
-        if (protocol !== "udp" && protocol !== "udp4" && protocol !== "udp6") {
+        if (protocol !== "udp:" && protocol !== "udp4:" && protocol !== "udp6:") {
             throw new Error('protocol not supported');
         }
     } catch (err) {
@@ -95,14 +95,6 @@ function jsonify(value)
 
 function sanitizeValue(value)
 {
-    if (value instanceof Error) {
-        return {
-            name: value.name,
-            message: value.message,
-            stack: value.stack,
-        };
-    }
-
     if (value instanceof Date) {
         return value.toISOString();
     }
