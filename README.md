@@ -11,6 +11,15 @@ A [Haraka](https://haraka.github.io/) plugin that forwards log messages to a [Gr
 - Per-plugin log routing with independent configuration
 - Exposes a `loggelf` API on `server.notes` for other plugins to send structured GELF messages directly
 
+## AI Usage Disclaimer
+
+This project makes limited use of generative AI tools during development:
+
+- Generative AI was used for brainstorming, test generation, documentation and code review assistance
+- All production code was written, reviewed, and validated by a human
+- Final design decisions and implementations are human-driven
+- Any defects or limitations in the code are the responsibility of the human authors
+
 ## Installation
 
 ```
@@ -31,6 +40,9 @@ Create `config/gelf.ini`:
 [main]
 ; Enable or disable the plugin
 enabled = true
+
+; Enable or disable Haraka log hook (send all Haraka log to graylog)
+log_hook_enabled = true
 
 ; GELF UDP endpoint
 ; Supports udp://, udp4://, udp6:// schemes
@@ -156,7 +168,6 @@ Any extra fields in `msg` are included as GELF additional fields (prefixed with 
 | `number`  | Passed as-is                           |
 | `boolean` | Passed as-is                           |
 | `Date`    | Converted to ISO 8601 string           |
-| `Error`   | Expanded to `{ name, message, stack }` |
 | Other     | JSON round-tripped                     |
 
 ## GELF message format
@@ -175,21 +186,21 @@ Messages are sent as GELF 1.1 JSON over UDP. The following standard GELF fields 
 | `file`          | Optional                                          |
 | `line`          | Optional                                          |
 
-## Syslog levels
+## Log levels
 
-| Level  | Value |
-|--------|-------|
-| EMERG  | 0     |
-| ALERT  | 1     |
-| CRIT   | 2     |
-| ERROR  | 3     |
-| WARN   | 4     |
-| NOTICE | 5     |
-| INFO   | 6     |
-| DEBUG  | 7     |
+| Level     | Value |
+|-----------|-------|
+| emergency | 0     |
+| alert     | 1     |
+| critical  | 2     |
+| error     | 3     |
+| warning   | 4     |
+| notice    | 5     |
+| info      | 6     |
+| debug     | 7     |
 
 Haraka log levels `DATA` and `PROTOCOL` are mapped to `DEBUG` (7).
 
 ## License
 
-MIT
+EUPL-1.1+
