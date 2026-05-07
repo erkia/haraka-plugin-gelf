@@ -1,0 +1,32 @@
+# Enable/disable GELF logging
+enabled: true
+
+# Enable/disable Haraka log hook
+#   true - all logged messages are forwarded to graylog.
+#  false - only messages logged over `server.notes.loggelf` API are forwarded to graylog
+log_hook_enabled: false
+
+# Graylog URL
+url: 'udp://localhost:12201'
+
+# Custom GELF fields added to every logged message
+fields:
+  logger: '${logger}'
+  connection: '${connection_uuid}'
+  transaction: '${transaction_uuid}'
+
+# If true, no further log plugins will be called after this one
+last: false
+
+# Per-plugin override examples
+# plugins:
+#   rspamd:
+#     app: 'rspamd'
+#
+#  wildduck:
+#    log_hook_enabled: true
+#    url: 'udp4://wildduck-graylog.example.com:12201'
+#    fields:
+#      component: 'mx'
+#      transaction: null
+#      queue_id: '${transaction_uuid}'

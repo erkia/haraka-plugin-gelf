@@ -43,7 +43,7 @@ function toBool(value, defaultValue)
 
 function resolveConfig(plugin, name, main, ovr = {})
 {
-    const out = { ...main };
+    const out = structuredClone(main);
 
     if ('enabled' in ovr)           out.enabled = toBool(ovr.enabled, true);
     if ('log_hook_enabled' in ovr)  out.log_hook_enabled = toBool(ovr.log_hook_enabled, true);
@@ -52,6 +52,7 @@ function resolveConfig(plugin, name, main, ovr = {})
     if ('last' in ovr)              out.last = toBool(ovr.last, false);
     if ('max_chunk_size' in ovr)    out.max_chunk_size = Number(ovr.max_chunk_size);
     if ('hostname' in ovr)          out.hostname = ovr.hostname;
+    if (typeof ovr.fields === 'object') out.fields = { ...out.fields, ...ovr.fields };
 
     // Have some sane minimum limit and theoretical maximum limit for max_chunk_size.
     // Actual meaningful values depend on network MTU and Graylog components.
@@ -62,7 +63,7 @@ function resolveConfig(plugin, name, main, ovr = {})
 
     try {
         const { protocol } = new URL(out.url);
-        if (protocol !== "udp" && protocol !== "udp4" && protocol !== "udp6") {
+        if (protocol !== "udp:" && protocol !== "udp4:" && protocol !== "udp6:") {
             throw new Error('protocol not supported');
         }
     } catch (err) {
@@ -95,20 +96,14 @@ function jsonify(value)
 
 function sanitizeValue(value)
 {
-    if (value instanceof Error) {
-        return {
-            name: value.name,
-            message: value.message,
-            stack: value.stack,
-        };
-    }
-
     if (value instanceof Date) {
         return value.toISOString();
     }
 
-    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    if (typeof value === 'string' || typeof value === 'number') {
         return value;
+    } else if (typeof value === 'boolean') {
+        return (value ? "true" : "false");
     }
 
     return jsonify(value);
@@ -139,7 +134,7 @@ function normalizeTimestamp(value)
     return Date.now() / 1000;
 }
 
-function createMessage(cfg, msg)
+function createGelfPayload(cfg, msg)
 {
     const out = {
         version: GELF_VERSION,
@@ -168,7 +163,7 @@ function createMessage(cfg, msg)
 
 async function sendGelf(socket, cfg, message)
 {
-    const payload = createMessage(cfg, message);
+    const payload = createGelfPayload(cfg, message);
 
     let buffer = Buffer.from(JSON.stringify(payload), 'utf8');
 
@@ -234,6 +229,26 @@ function getConfig(plugin, callerPlugin)
     }
 }
 
+function fillExtraFields(msg, fields, vars)
+{
+    for (const [name, value] of Object.entries(fields)) {
+        const replaced_value = stringify(value).replace(/\$\{([^}]+)\}/g, (match, name) => {
+            const v = Object.prototype.hasOwnProperty.call(vars, name) ? vars[name] : undefined;
+            if (v !== null && v !== undefined) {
+                return v;
+            } else {
+                return '';
+            }
+        });
+        if (replaced_value.length !== 0) {
+            // Intentionally not prefixing with '_', to allow overriding reserved fields
+            msg[name] = replaced_value;
+        }
+    }
+
+    return msg;
+}
+
 exports.register = function ()
 {
     const plugin = this;
@@ -249,8 +264,8 @@ exports.load_gelf_config = function ()
 {
     const plugin = this;
 
-    const cfg = plugin.config.get(
-        'gelf.ini',
+    const yaml = plugin.config.get(
+        'gelf.yaml',
         {
             booleans: [
                 '+main.enabled',
@@ -264,19 +279,22 @@ exports.load_gelf_config = function ()
         }
     ) || {};
 
+    let cfg = {};
+
     // Pass through resolveConfig() for validation
     cfg.main = resolveConfig(plugin, 'main', {
-        enabled: toBool(cfg.main?.enabled, true),
-        log_hook_enabled: toBool(cfg.main?.log_hook_enabled, true),
-        url: cfg.main?.url || 'udp://localhost:12201',
-        compress: toBool(cfg.main?.compress, true),
-        last: toBool(cfg.main?.last, false),
-        max_chunk_size: Number(cfg.main?.max_chunk_size || 1420),
-        hostname: cfg.main?.hostname || os.hostname(),
+        enabled: toBool(yaml.enabled, true),
+        log_hook_enabled: toBool(yaml.log_hook_enabled, true),
+        url: yaml.url || 'udp://localhost:12201',
+        compress: toBool(yaml.compress, true),
+        last: toBool(yaml.last, false),
+        max_chunk_size: Number(yaml.max_chunk_size || 1420),
+        hostname: yaml.hostname || os.hostname(),
+        fields: yaml.fields || {},
     });
 
     const plugins = {};
-    for (const [pluginName, pluginCfg] of Object.entries(cfg.plugins || {})) {
+    for (const [pluginName, pluginCfg] of Object.entries(yaml.plugins || {})) {
         if (!pluginCfg || typeof pluginCfg !== 'object') {
             continue;
         }
@@ -378,105 +396,77 @@ exports.init_gelf_sender = function (next, server)
         return socket;
     };
 
+    const sendMessage = (pluginCfg, msg) =>
+    {
+        if (pluginCfg.enabled) {
+            (async () => {
+                try {
+                    const socket = getSocket(pluginCfg.url);
+                    await sendGelf(socket, pluginCfg, msg);
+                } catch (err) {
+                    // Do not use Haraka logger to avoid log loop
+                    console.error(`GELF UDP socket error: ${pluginCfg.url}: ${err.message}`);
+                }
+            })();
+        }
+
+        return pluginCfg.last;
+    };
+
     server.notes.loggelf = {
 
-        getSender(callerPlugin)
+        message(callerPlugin, msg, extra = {})
         {
             const pluginCfg = getConfig(plugin, callerPlugin);
 
-            if (!pluginCfg.enabled) {
-                return {
-                    message(msg) {
-                        return pluginCfg.last;
-                    },
-                };
-            }
-
-            try {
-                const socket = getSocket(pluginCfg.url);
-                return {
-                    message(msg) {
-                        sendGelf(socket, pluginCfg, msg).catch((err) => {
-                            // Do not use Haraka logger to avoid log loop
-                            console.error(err.message);
-                        });
-                        return pluginCfg.last;
-                    },
-                };
-            } catch (err) {
-                return {
-                    message(msg) {
-                        console.error(`GELF UDP socket error: ${pluginCfg.url}: ${err.message}`);
-                        return pluginCfg.last;
-                    },
-                };
-            }
-        },
-
-        message(callerPlugin, msg)
-        {
-            const pluginCfg = getConfig(plugin, callerPlugin);
-
-            if (pluginCfg.enabled) {
-                (async () => {
-                    try {
-                        const socket = getSocket(pluginCfg.url);
-                        await sendGelf(socket, pluginCfg, msg);
-                    } catch (err) {
-                        // Do not use Haraka logger to avoid log loop
-                        console.error(err.message);
-                    }
-                })();
-            }
-
-            return pluginCfg.last;
-        },
-
-        log(callerPlugin, connection, level, shortMessage, extra = {})
-        {
-            const pluginName = callerPlugin?.name;
-            const txid = connection?.transaction?.uuid;
-
-            return this.message(callerPlugin, {
+            return sendMessage(pluginCfg, fillExtraFields(msg, pluginCfg.fields, {
+                logger: callerPlugin?.name,
                 ...extra,
+            }));
+        },
+
+        log(callerPlugin, connection, level, shortMessage, additional = {})
+        {
+            return this.message(callerPlugin, {
+                ...additional,
+                short_message: `[${(connection?.transaction?.uuid ?? '-')}] [${callerPlugin?.name ?? '-'}] ${shortMessage}`,
                 level,
-                short_message: `[${(txid ?? '-')}] [${pluginName ?? '-'}] ${shortMessage}`,
-                _logger: pluginName,
-                _connection: connection?.uuid,
-                _transaction: txid,
+            }, {
+                connection_uuid: connection?.uuid,
+                transaction_uuid: connection?.transaction?.uuid,
             });
         },
 
-        emergency(callerPlugin, connection, shortMessage, extra = {}) {
-            return this.log(callerPlugin, connection, LogLevel.EMERG, shortMessage, extra);
+        emergency(callerPlugin, connection, shortMessage, additional = {}) {
+            return this.log(callerPlugin, connection, LogLevel.EMERG, shortMessage, additional);
         },
 
-        alert(callerPlugin, connection, shortMessage, extra = {}) {
-            return this.log(callerPlugin, connection, LogLevel.ALERT, shortMessage, extra);
+        alert(callerPlugin, connection, shortMessage, additional = {}) {
+            return this.log(callerPlugin, connection, LogLevel.ALERT, shortMessage, additional);
         },
 
-        critical(callerPlugin, connection, shortMessage, extra = {}) {
-            return this.log(callerPlugin, connection, LogLevel.CRIT, shortMessage, extra);
+        critical(callerPlugin, connection, shortMessage, additional = {}) {
+            return this.log(callerPlugin, connection, LogLevel.CRIT, shortMessage, additional);
         },
 
-        error(callerPlugin, connection, shortMessage, extra = {}) {
-            return this.log(callerPlugin, connection, LogLevel.ERROR, shortMessage, extra);
+        error(callerPlugin, connection, shortMessage, additional = {}) {
+            return this.log(callerPlugin, connection, LogLevel.ERROR, shortMessage, additional);
         },
 
-        warning(callerPlugin, connection, shortMessage, extra = {}) {
-            return this.log(callerPlugin, connection, LogLevel.WARN, shortMessage, extra);
+        warning(callerPlugin, connection, shortMessage, additional = {}) {
+            return this.log(callerPlugin, connection, LogLevel.WARN, shortMessage, additional);
         },
 
-        notice(callerPlugin, connection, shortMessage, extra = {}) {
-            return this.log(callerPlugin, connection, LogLevel.NOTICE, shortMessage, extra);
+        notice(callerPlugin, connection, shortMessage, additional = {}) {
+            return this.log(callerPlugin, connection, LogLevel.NOTICE, shortMessage, additional);
         },
 
-        info(callerPlugin, connection, shortMessage, extra = {}) {
-            return this.log(callerPlugin, connection, LogLevel.INFO, shortMessage, extra);
+        info(callerPlugin, connection, shortMessage, additional = {}) {
+            return this.log(callerPlugin, connection, LogLevel.INFO, shortMessage, additional);
         },
 
-        debug(callerPlugin, connection, shortMessage, extra = {}) {
-            return this.log(callerPlugin, connection, LogLevel.DEBUG, shortMessage, extra);
+        debug(callerPlugin, connection, shortMessage, additional = {}) {
+            return this.log(callerPlugin, connection, LogLevel.DEBUG, shortMessage, additional);
         },
 
         close() {
@@ -507,51 +497,54 @@ exports.hook_log = function (next, logger, log)
 {
     const plugin = this;
 
-    if (!plugin.loggelf) {
+    if (!plugin.loggelf || typeof(log) !== 'object') {
         return next();
     }
 
-    const msg = {
-        level: LogLevel[log.level.toUpperCase()] ?? LogLevel.DEBUG,
-        short_message: undefined,
-        _connection: undefined,
-        _transaction: undefined,
-        _logger: undefined,
+    let msg = {
+        level: LogLevel[stringify(log.level).toUpperCase()] ?? LogLevel.DEBUG,
     };
 
+    let connection_uuid = undefined;
+    let transaction_uuid = undefined;
+    let callerName = undefined;
+
     // Get UUID and caller plugin name from log message
-    const match = log.data.match(/^\[([^\]]+)\] \[([^\]]+)\] \[([^\]]+)\] (.+)$/);
+    const match = stringify(log.data).match(/^\[([^\]]+)\] \[([^\]]+)\] \[([^\]]+)\] (.+)$/);
     if (match) {
         if (match[2] !== '-') {
             // UUID is
             //       connection UUID (i.e. 481ED4FE-1B62-49CF-B581-F7B6641256BB)
             //   or transaction UUID (i.e. 481ED4FE-1B62-49CF-B581-F7B6641256BB.1)
-            const uuidmatch = match[2].match(/^([^\.]+)(\.([0-9]+))?$/i);
+            const uuidmatch = match[2].match(/^([^.]+)(\.([0-9]+))?$/i);
             if (uuidmatch) {
-                msg._connection = uuidmatch[1];
+                connection_uuid = uuidmatch[1];
                 if (uuidmatch[3]) {
-                    msg._transaction = uuidmatch[0];
+                    transaction_uuid = uuidmatch[0];
                 }
             }
         }
         if (match[3] !== '-') {
-            msg._logger = match[3];
+            callerName = match[3];
         }
         // Remove log level, but keep UUID and plugin name
         msg.short_message = `[${match[2]}] [${match[3]}] ${match[4]}`;
     } else {
-        msg.short_message = log.data;
+        msg.short_message = stringify(log.data);
     }
 
     // Make fake callerPlugin to pass to our functions, which currently only use the name of the plugin.
-    const callerPlugin = { name: msg._logger };
+    const callerPlugin = { name: callerName };
 
     const pluginCfg = getConfig(plugin, callerPlugin);
     if (!pluginCfg.log_hook_enabled) {
         return next();
     }
 
-    const is_last = plugin.loggelf.message(callerPlugin, msg);
+    const is_last = plugin.loggelf.message(callerPlugin, msg, {
+        connection_uuid,
+        transaction_uuid,
+    });
 
     if (is_last) {
         // Skip all following logger plugins
