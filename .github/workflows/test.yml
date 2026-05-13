@@ -1,0 +1,21 @@
+name: Run tests
+
+on:
+    push:
+    pull_request:
+
+jobs:
+    test:
+        strategy:
+            matrix:
+                os: [ubuntu-latest]
+                node: [18, 24]
+        runs-on: ${{ matrix.os }}
+        steps:
+            - uses: actions/checkout@v6
+            - name: Use Node.js ${{ matrix.node }}
+              uses: actions/setup-node@v6
+              with:
+                  node-version: ${{ matrix.node }}
+            - run: npm ci
+            - run: npm test

@@ -9,7 +9,7 @@
   "scripts": {
     "lint": "npx eslint *.js test",
     "lint:fix": "npx eslint *.js test --fix",
-    "test": "npx mocha"
+    "test": "node test/main.js"
   },
   "repository": {
     "type": "git",
