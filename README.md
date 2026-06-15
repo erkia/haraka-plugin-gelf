@@ -52,6 +52,10 @@ enabled: true
 #   false - only messages sent via the server.notes.loggelf API are forwarded
 log_hook_enabled: false
 
+# Minimum level of log messages to forward to graylog from log hook
+# 0 - emerg, 1 - alert, 2 - crit, 3 - error, 4 - warn, 5 - notice, 6 - info, 7 - debug
+log_hook_level: 4
+
 # GELF UDP endpoint. Supports udp://, udp4://, udp6:// schemes
 url: 'udp://graylog.example.com:12201'
 

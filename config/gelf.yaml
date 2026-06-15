@@ -2,9 +2,13 @@
 enabled: true
 
 # Enable/disable Haraka log hook
-#   true - all logged messages are forwarded to graylog.
+#   true - all logged messages are forwarded to graylog
 #  false - only messages logged over `server.notes.loggelf` API are forwarded to graylog
 log_hook_enabled: false
+
+# Minimum level of log messages to forward to graylog from log hook
+# 0 - emerg, 1 - alert, 2 - crit, 3 - error, 4 - warn, 5 - notice, 6 - info, 7 - debug
+log_hook_level: 4
 
 # Graylog URL
 url: 'udp://localhost:12201'

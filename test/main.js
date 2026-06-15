@@ -9,6 +9,7 @@ const fixtures = require('haraka-test-fixtures');
 const defaultConfig = {
     enabled: true,
     log_hook_enabled: true,
+    log_hook_level: 7,
     url: 'udp://graylog.example.test:12201',
     compress: false,
     max_chunk_size: 1420,
@@ -1086,6 +1087,29 @@ describe('hook_log', () => {
         const plugin = createPlugin({
             ...defaultConfig,
             log_hook_enabled: false,
+        });
+        const server = { notes: {} };
+        let nextCalled = false;
+
+        plugin.init_gelf_sender(() => {}, server);
+        plugin.loggelf.message = () => {
+            throw new Error('should not send');
+        };
+
+        plugin.hook_log(() => {
+            nextCalled = true;
+        }, null, {
+            level: 'INFO',
+            data: '[INFO] [CONN-1] [queue] queued',
+        });
+
+        assert.equal(nextCalled, true);
+    });
+
+    it('skips forwarding when log_hook_level is higher', () => {
+        const plugin = createPlugin({
+            ...defaultConfig,
+            log_hook_level: 5,
         });
         const server = { notes: {} };
         let nextCalled = false;

@@ -47,6 +47,7 @@ function resolveConfig(plugin, name, main, ovr = {})
 
     if ('enabled' in ovr)           out.enabled = toBool(ovr.enabled, true);
     if ('log_hook_enabled' in ovr)  out.log_hook_enabled = toBool(ovr.log_hook_enabled, true);
+    if ('log_hook_level' in ovr)    out.log_hook_level = Number(ovr.log_hook_level);
     if ('url' in ovr)               out.url = ovr.url;
     if ('compress' in ovr)          out.compress = toBool(ovr.compress, true);
     if ('last' in ovr)              out.last = toBool(ovr.last, false);
@@ -285,6 +286,7 @@ exports.load_gelf_config = function ()
     cfg.main = resolveConfig(plugin, 'main', {
         enabled: toBool(yaml.enabled, true),
         log_hook_enabled: toBool(yaml.log_hook_enabled, true),
+        log_hook_level: Number(yaml.log_hook_level || LogLevel.INFO),
         url: yaml.url || 'udp://localhost:12201',
         compress: toBool(yaml.compress, true),
         last: toBool(yaml.last, false),
@@ -541,10 +543,15 @@ exports.hook_log = function (next, logger, log)
         return next();
     }
 
-    const is_last = plugin.loggelf.message(callerPlugin, msg, {
-        connection_uuid,
-        transaction_uuid,
-    });
+    let is_last;
+    if (msg.level <= pluginCfg.log_hook_level) {
+        is_last = plugin.loggelf.message(callerPlugin, msg, {
+            connection_uuid,
+            transaction_uuid,
+        });
+    } else {
+        is_last = pluginCfg.last;
+    }
 
     if (is_last) {
         // Skip all following logger plugins
